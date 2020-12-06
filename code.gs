@@ -1,3 +1,5 @@
+var GITHUBTOKEN = "<ADD YOUR GITHUB TOKEN>"
+
 var cc = DataStudioApp.createCommunityConnector();
 
 function getAuthType() {
@@ -13,7 +15,7 @@ function getConfig(request) {
   
   config.newInfo()
     .setId('instructions')
-    .setText('Enter githhub repo names to fetch their star count.');
+    .setText('Enter GitHub repo names to fetch their star count.');
   
   config.newTextInput()
     .setId('repository')
@@ -41,8 +43,12 @@ function getFields(request) {
     .setType(types.TEXT);
   
   fields.newDimension()
-    .setId('day')
+    .setId('Date')
     .setType(types.YEAR_MONTH_DAY);
+    
+  fields.newDimension()
+    .setId('totalStars')
+    .setType(types.NUMBER);
 
   return fields;
 }
@@ -52,32 +58,58 @@ function getSchema(request) {
   return { schema: fields };
 }
 
-function responseToRows(requestedFields, response, repository) {
-  // Transform parsed data and filter for requested fields
-  return response.map(function(star) {
+function responseToRows(requestedFields, response, repository, totalStars, startDate, endDate) {
+  var end = false;
+  var res =  [];
+  for(var i in response){
+    var star = response[i];
+
     var row = [];
+    var starredAt = new Date(star["starredAt"])
+    var starredValue = starredAt.valueOf();
+    
+    if (startDate.valueOf() > starredValue) {
+      end = true;
+      break;
+    }
+
+    if (starredValue > endDate.valueOf()) {
+      continue;
+    }
+
     requestedFields.asArray().forEach(function (field) {
       switch (field.getId()) {
-        case 'day':
-          Logger.log(Utilities.formatDate(new Date(star.starred_at), "GMT", "yyyy-MM-dd"))
-          return row.push(Utilities.formatDate(new Date(star.starred_at), "GMT", "yyyyMMdd"));
+        case 'Date':
+          return row.push(Utilities.formatDate(starredAt, "GMT", "yyyyMMdd"));
         case 'user':
-          return row.push(star.user.login);
+          return row.push(star["node"]["login"]);
         case 'repository':
           return row.push(repository);
+        case 'totalStars':
+          return row.push(totalStars);
         default:
           return row.push('');
       }
     });
-    return { values: row };
-  });
+
+    res.push({ values: row })
+  }
+  
+  return {
+    "parsed": res,
+    "end": end
+  }
 }
 
 function testData() {
    getData({
-     "fields":[{"name": "day"}, {"name": "user"}, {"name": "repository"}],
+     "fields":[{"name": "Date"}, {"name": "user"}, {"name": "repository"}, {"name": "totalStars"}],
      "configParams": {
        "repository": 'canonical-web-and-design/vanilla-framework'
+     },
+     "dateRange": {
+       "startDate":  "2019-09-11",
+       "endDate": "2019-09-18"
      }
    });
 }
@@ -87,37 +119,63 @@ function getData(request) {
     return field.name;
   });
   var requestedFields = getFields().forIds(requestedFieldIds);
-  //var startDate = request.dateRange.startDate;
-  //var endDate = request.dateRange.endDate;
+  var startDate = new Date(request.dateRange.startDate);
+  var endDate = new Date(request.dateRange.endDate);
   
-  var page = 1;
+  repositorySplitted = request.configParams.repository.split("/");
+  
   var stars = [];
+  var next;
   while(true) {
-    // Fetch and parse data from API
-    var url = [
-      'https://api.github.com/repos/',
-      request.configParams.repository,
-      "/stargazers?per_page=100",
-      "&page=",
-      page
-    ];
-  
-    var options = {"headers": {"Accept": "application/vnd.github.v3.star+json"}};
-    var response = UrlFetchApp.fetch(url.join(''), options);
-    var parsedResponse = JSON.parse(response);
-    if(parsedResponse.length === 0) {
-      break;
-    } else {
-      page = page + 1;
+    var url = 'https://api.github.com/graphql';
+
+    if (next) {
+      var query = {
+        "query": "{ repository (name: \"" + repositorySplitted[1] + "\", owner: \"" + repositorySplitted[0] + "\") { stargazers(first: 100, orderBy: {field: STARRED_AT, direction: DESC}, after: \"" + next + "\") {totalCount edges {starredAt node {login}} pageInfo {hasNextPage endCursor}}}}"
+      }
+    } else { 
+        var query = {
+        "query": "{ repository (name: \"" + repositorySplitted[1] + "\", owner: \"" + repositorySplitted[0] + "\") { stargazers(first: 100, orderBy: {field: STARRED_AT, direction: DESC}) {totalCount edges {starredAt node {login}} pageInfo {hasNextPage endCursor}}}}"
+      }
     }
 
-    stars = stars.concat(stars, parsedResponse)
+    var options = {
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "bearer " + GITHUBTOKEN
+      },
+      "payload": JSON.stringify(query),
+      "muteHttpExceptions": true
+    };
+    
+    try { var response = UrlFetchApp.fetch(url, options); } 
+    catch (e) { Logger.log(e);  }
+    var parsedResponse = JSON.parse(response);
+
+    var totalStars = parsedResponse["data"]["repository"]["stargazers"]["totalCount"];
+    var pageInfo = parsedResponse["data"]["repository"]["stargazers"]["pageInfo"];
+
+    var parsedData = responseToRows(
+      requestedFields, 
+      parsedResponse["data"]["repository"]["stargazers"]["edges"], 
+      request.configParams.repository, 
+      totalStars,
+      startDate, 
+      endDate
+    )
+
+    stars = stars.concat(parsedData["parsed"])
+    
+    if(!parsedData["end"] && pageInfo["hasNextPage"]) {
+      next = pageInfo["endCursor"];
+    } else {
+      break;
+    }
   }
-  
-  var rows = responseToRows(requestedFields, stars, request.configParams.repository);
 
   return {
     schema: requestedFields.build(),
-    rows: rows
+    rows: stars
   };
 }
