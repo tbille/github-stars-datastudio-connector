@@ -5,6 +5,7 @@ This connector allows you to visualize the GitHub stars that you have on your re
 ## Demo
 
 [Vanilla framework star count](https://datastudio.google.com/reporting/fe5e5df5-3717-40ac-a288-094dcc954df1)
+![image](https://user-images.githubusercontent.com/2707508/101328353-cc947380-3867-11eb-96b6-b4701c904f55.png)
 
 
 ## Use it 
